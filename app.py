@@ -54,9 +54,9 @@ def load_base_dir():
     root = tk.Tk()
     root.withdraw()  # Скрыть основное окно
 
-    messagebox.showinfo("Первый запуск", "Пожалуйста, выберите папку для хранения базы данных (файл base.json будет создан автоматически).")
+    messagebox.showinfo("Первый запуск", "Пожалуйста, выберите папку с файлом base.json.")
 
-    folder = filedialog.askdirectory(title="Выберите папку для базы данных")
+    folder = filedialog.askdirectory(title="Выберите папку с базой данных (base.json)")
     root.destroy()
 
     if not folder:
@@ -64,18 +64,13 @@ def load_base_dir():
         exit()
 
     base_dir = Path(folder)
-    try:
-        base_dir.mkdir(parents=True, exist_ok=True)
-        # Проверка записи
-        test_file = base_dir / ".write_test"
-        test_file.write_text("ok", encoding='utf-8')
-        test_file.unlink()
-    except Exception as e:
-        messagebox.showerror("Ошибка", f"Нет прав на запись в выбранную папку:\n{e}")
-        exit()
 
-    # Сохраняем настройки
-    save_base_dir(base_dir)
+    # Сохраняем настройки (игнорируем ошибку записи)
+    try:
+        save_base_dir(base_dir)
+    except Exception:
+        pass
+
     return base_dir
 
 
@@ -84,8 +79,9 @@ def save_base_dir(base_dir: Path):
     try:
         with open(SETTINGS_PATH, 'w', encoding='utf-8') as f:
             json.dump({"base_dir": str(base_dir)}, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        messagebox.showerror("Ошибка", f"Не удалось сохранить настройки:\n{e}")
+    except Exception:
+        # Игнорируем ошибку — нормально для readonly-пользователей
+        pass
 
 
 def ensure_base_exists(base_path: Path):
@@ -105,11 +101,22 @@ class RegistrumApp:
         # Загружаем путь к базе (запросит при первом запуске)
         self.base_dir = load_base_dir()
         self.base_path = self.base_dir / "base.json"
+
+        # Определяем, есть ли права на запись
+        self.readonly_mode = not self.can_write_to_base_dir()
+
+        if self.readonly_mode:
+            self.root.title("Registrum — Реестр счетов покупок [Только чтение]")
+            messagebox.showinfo("Режим просмотра", "Обнаружен режим только для чтения.\n"
+                                                   "Добавление, редактирование и удаление записей недоступны.")
+
         try:
             ensure_base_exists(self.base_path)
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось создать базу данных:\n{e}")
-            self.base_path = None
+            if not self.readonly_mode:
+                messagebox.showerror("Ошибка", f"Не удалось создать базу данных:\n{e}")
+                self.base_path = None
+            # В readonly режиме ошибка создания игнорируется — файл должен уже существовать
 
         # === Поиск и кнопки на одном уровне ===
         top_frame = tk.Frame(root)
@@ -122,7 +129,8 @@ class RegistrumApp:
         self.search_entry.pack(side=tk.LEFT, padx=(5, 10))
 
         tk.Button(top_frame, text="Очистить", command=self.clear_search).pack(side=tk.LEFT, padx=(0, 5))
-        tk.Button(top_frame, text="Резерв", command=self.create_backup).pack(side=tk.LEFT, padx=(0, 20))
+        self.btn_backup = tk.Button(top_frame, text="Резерв", command=self.create_backup)
+        self.btn_backup.pack(side=tk.LEFT, padx=(0, 20))
 
         # Кнопки управления (справа)
         btn_frame = tk.Frame(top_frame)
@@ -137,6 +145,11 @@ class RegistrumApp:
 
         for i, btn in enumerate([self.btn_pdf, self.btn_excel, self.btn_settings, self.btn_chart, self.btn_info, self.btn_exit]):
             btn.grid(row=0, column=i, padx=3)
+
+        # Отключаем недоступные кнопки в readonly режиме
+        if self.readonly_mode:
+            self.btn_backup.config(state='disabled')
+            self.btn_settings.config(state='disabled')
 
         # Таблица
         table_frame = tk.Frame(root)
@@ -165,6 +178,10 @@ class RegistrumApp:
         self.context_menu.add_command(label="Удалить", command=self.delete_selected)
         self.tree.bind("<Button-3>", self.show_context_menu)
         self.tree.bind("<Double-1>", self.on_double_click)
+
+        # В readonly режиме удаляем пункт "Удалить"
+        if self.readonly_mode:
+            self.context_menu.delete(0)
 
         # Форма ввода — растянута на всю ширину
         form_frame = tk.Frame(root)
@@ -208,11 +225,34 @@ class RegistrumApp:
         self.btn_save_order.pack(side=tk.LEFT, padx=10)
         self.btn_cancel.pack(side=tk.LEFT, padx=10)
 
+        # Отключаем форму ввода в readonly режиме
+        if self.readonly_mode:
+            self.btn_new.config(state='disabled')
+            self.btn_save_order.config(state='disabled')
+            self.btn_cancel.config(state='disabled')
+            for widget in self.entries.values():
+                if isinstance(widget, tk.Entry):
+                    widget.config(state='disabled')
+                elif isinstance(widget, tk.Text):
+                    widget.config(state='disabled')
+
         self.editing_index = None
         self.all_data = []
         self.load_table()
         self.clear_form()
         self.root.bind("<Escape>", lambda e: self.root.quit())
+
+    def can_write_to_base_dir(self) -> bool:
+        """Проверяет, можно ли писать в папку базы."""
+        if not self.base_dir:
+            return False
+        try:
+            test_file = self.base_dir / ".write_test_registrum"
+            test_file.write_text("ok", encoding='utf-8')
+            test_file.unlink()
+            return True
+        except (OSError, IOError, PermissionError):
+            return False
 
     def load_table(self):
         self.all_data = self.load_data()
@@ -298,6 +338,10 @@ class RegistrumApp:
         self.refresh_table_view()
 
     def create_backup(self):
+        if self.readonly_mode:
+            messagebox.showwarning("Доступ запрещён", "Режим только для чтения. Создание резервной копии невозможно.")
+            return
+
         if not self.base_path or not self.base_path.exists():
             messagebox.showwarning("Предупреждение", "Файл базы не существует!")
             return
@@ -323,6 +367,9 @@ class RegistrumApp:
             return []
 
     def save_data(self, data):
+        if self.readonly_mode:
+            return  # Ничего не делаем — или можно показать предупреждение, но уже проверено выше
+
         if not self.base_path:
             messagebox.showerror("Ошибка", "Путь к базе не задан.")
             return
@@ -333,6 +380,9 @@ class RegistrumApp:
             messagebox.showerror("Ошибка", f"Не удалось сохранить базу:\n{e}")
 
     def clear_form(self):
+        if self.readonly_mode:
+            return
+
         self.editing_index = None
         for field in ["Дата", "Заказ", "Сумма", "Поставщик", "Плательщик", "Инициатор", "Оплата", "Забрал"]:
             self.entries[field].delete(0, tk.END)
@@ -368,6 +418,10 @@ class RegistrumApp:
             self.entries[field].insert("1.0", record.get(field, ""))
 
     def save_order(self):
+        if self.readonly_mode:
+            messagebox.showwarning("Доступ запрещён", "Режим только для чтения. Изменения невозможны.")
+            return
+
         record = {}
         for field in ["Дата", "Заказ", "Сумма", "Поставщик", "Плательщик", "Инициатор", "Оплата", "Забрал"]:
             record[field] = self.entries[field].get().strip()
@@ -514,9 +568,13 @@ class RegistrumApp:
             messagebox.showerror("Ошибка", f"Не удалось создать Excel:\n{e}")
 
     def show_info(self):
-        messagebox.showinfo("Информация", "Автор Разин Г.В.")
+        messagebox.showinfo("Информация", "Registrum v0.5 Автор Разин Г.В.")
 
     def open_settings(self):
+        if self.readonly_mode:
+            messagebox.showwarning("Доступ запрещён", "Режим только для чтения. Настройки недоступны.")
+            return
+
         settings_win = tk.Toplevel(self.root)
         settings_win.title("Настройки")
         settings_win.geometry("600x150")
@@ -566,6 +624,10 @@ class RegistrumApp:
             self.context_menu.post(event.x_root, event.y_root)
 
     def delete_selected(self):
+        if self.readonly_mode:
+            messagebox.showwarning("Доступ запрещён", "Режим только для чтения. Удаление невозможно.")
+            return
+
         selected = self.tree.selection()
         if not selected:
             return
