@@ -20,7 +20,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Создаем временную папку для проверки обновлений
+:: Создаем временную папку
 if not exist "%TEMP_DIR%" mkdir "%TEMP_DIR%"
 
 :: Проверяем наличие Git
@@ -34,44 +34,47 @@ if errorlevel 1 (
 echo Проверяем наличие обновлений...
 cd /d "%TEMP_DIR%"
 
-:: Клонируем или обновляем репозиторий для проверки версии
 if exist "registrum" (
     cd registrum
-    git fetch origin >nul 2>&1
-) else (
-    git clone --depth 1 %REPO_URL% registrum >nul 2>&1
+    git fetch origin main --quiet
     if errorlevel 1 (
-        echo Не удалось проверить обновления
+        echo Не удалось получить данные из репозитория
+        goto :run_app
+    )
+) else (
+    git clone --depth 1 --quiet %REPO_URL% registrum
+    if errorlevel 1 (
+        echo Не удалось клонировать репозиторий
         goto :run_app
     )
     cd registrum
 )
 
-:: Получаем информацию о последнем коммите
-for /f "tokens=1" %%i in ('git log -1 --format^=%%h') do set "LATEST_COMMIT=%%i"
-for /f "tokens=1,2" %%i in ('git log -1 --format^=%%ci') do set "LATEST_DATE=%%i %%j"
+:: Получаем хеш последнего коммита в main
+for /f "delims=" %%i in ('git rev-parse --short origin/main 2^>nul') do set "LATEST_COMMIT=%%i"
 
 cd /d "%~dp0"
 
-:: Проверяем текущую версию (если есть файл версии)
+:: Читаем текущую версию
 set "CURRENT_COMMIT="
-set "CURRENT_DATE="
 if exist "version.txt" (
-    for /f "tokens=1,2" %%i in (version.txt) do (
-        set "CURRENT_COMMIT=%%i"
-        set "CURRENT_DATE=%%j"
-    )
+    set /p CURRENT_COMMIT=<version.txt
 )
 
-if "%CURRENT_COMMIT%"=="" (
-    echo Информация о версии не найдена
+if defined CURRENT_COMMIT (
+    echo Текущая версия: %CURRENT_COMMIT%
 ) else (
-    echo Текущая версия: %CURRENT_COMMIT% (%CURRENT_DATE%)
+    echo Информация о версии не найдена
 )
 
-echo Последняя версия: %LATEST_COMMIT% (%LATEST_DATE%)
+if defined LATEST_COMMIT (
+    echo Последняя версия: %LATEST_COMMIT%
+) else (
+    echo Не удалось определить последнюю версию
+    goto :run_app
+)
 
-:: Сравниваем версии
+:: Сравниваем
 if "%CURRENT_COMMIT%"=="%LATEST_COMMIT%" (
     echo У вас установлена последняя версия
 ) else (
@@ -84,24 +87,21 @@ if "%CURRENT_COMMIT%"=="%LATEST_COMMIT%" (
     echo.
     echo Выполняем обновление...
 
-    :: Создаем резервную копию текущей версии
-    if not exist "backup" mkdir "backup"
+    :: Резервная копия
     set "BACKUP_FOLDER=backup\registrum_backup_%date:~-4,4%%date:~-10,2%%date:~-7,2%_%time:~0,2%%time:~3,2%"
     set "BACKUP_FOLDER=%BACKUP_FOLDER: =0%"
-
+    if not exist "backup" mkdir "backup"
     echo Создаем резервную копию в %BACKUP_FOLDER%
-    xcopy * "%BACKUP_FOLDER%" /E /I /Y >nul 2>&1
+    xcopy * "%BACKUP_FOLDER%" /E /I /Y /Q >nul 2>&1
 
-    :: Обновляем файлы
-    cd /d "%TEMP_DIR%\registrum"
-    xcopy * "%~dp0" /E /Y /Q >nul 2>&1
+    :: Копируем новые файлы
+    xcopy "%TEMP_DIR%\registrum\*" "%~dp0" /E /Y /Q >nul 2>&1
 
-    :: Сохраняем информацию о новой версии
-    cd /d "%~dp0"
-    echo %LATEST_COMMIT% %LATEST_DATE% > version.txt
+    :: Сохраняем новую версию
+    echo %LATEST_COMMIT% > version.txt
 
     echo Обновление завершено!
-    echo Резервная копия сохранена в: %BACKUP_FOLDER%
+    echo Резервная копия: %BACKUP_FOLDER%
 )
 
 :run_app
@@ -109,44 +109,29 @@ echo.
 echo Запуск приложения...
 echo.
 
-:: Проверяем наличие основного скрипта
 if not exist "%SCRIPT_NAME%" (
-    echo ОШИБКА: Основной файл %SCRIPT_NAME% не найден
-    echo.
-    echo Попытка найти файл Python...
-    dir *.py /b
-    echo.
-    echo Укажите правильное имя файла в переменной SCRIPT_NAME
+    echo ОШИБКА: Файл %SCRIPT_NAME% не найден
     pause
     exit /b 1
 )
 
-:: Проверяем зависимости
-echo Проверяем зависимости Python...
-python -c "import tkinter, json, pathlib, datetime, re, shutil, reportlab, openpyxl, matplotlib" 2>nul
+:: Проверка зависимостей
+echo Проверяем зависимости...
+python -c "import reportlab, openpyxl, matplotlib" >nul 2>&1
 if errorlevel 1 (
-    echo.
-    echo Устанавливаем необходимые зависимости...
-    pip install -r requirements.txt 2>nul
-    if errorlevel 1 (
-        echo Не удалось установить зависимости автоматически
-        echo Устанавливаем вручную...
-        pip install reportlab openpyxl matplotlib
-    )
+    echo Устанавливаем зависимости...
+    pip install reportlab openpyxl matplotlib --quiet
 )
 
-:: Запускаем приложение
 echo.
 echo ========================================
 echo       Запуск Registrum...
 echo ========================================
 python "%SCRIPT_NAME%"
 
-:: Если приложение завершилось с ошибкой
 if errorlevel 1 (
     echo.
-    echo Приложение завершилось с ошибкой (код: %errorlevel%)
-    echo.
+    echo Ошибка при запуске приложения.
     pause
 )
 
