@@ -17,11 +17,11 @@ echo Checking for updates...
 :: Fetch latest changes from remote
 git fetch origin
 
-:: Compare local HEAD with remote main branch
-git diff --quiet HEAD origin/main
+:: Compare local HEAD with remote master branch
+git diff --quiet HEAD origin/master
 if errorlevel 1 (
     echo Updates detected. Pulling latest changes...
-    git pull origin main
+    git pull origin master
     if errorlevel 1 (
         echo Failed to update. Starting application anyway.
     ) else (
