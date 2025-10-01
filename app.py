@@ -3,14 +3,15 @@ import json
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 import shutil
+import csv
 
 # Для экспорта в PDF
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -23,9 +24,10 @@ from openpyxl.styles import Font, Alignment, PatternFill
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Путь к шрифту
+# Путь к шрифту и иконке
 ASSETS_DIR = Path(__file__).parent / "assets"
 CHAKRA_FONT_PATH = ASSETS_DIR / "ChakraPetch-Regular.ttf"
+ICON_PATH = Path(__file__).parent / "ico.ico"
 USE_CHAKRA_FONT = CHAKRA_FONT_PATH.exists()
 
 if USE_CHAKRA_FONT:
@@ -37,10 +39,10 @@ if USE_CHAKRA_FONT:
 
 # Файлы настроек и данных
 SETTINGS_PATH = Path(__file__).parent / "settings.json"
+AUDIT_LOG_PATH = None  # будет задан после загрузки base_dir
 
 
 def load_base_dir():
-    """Загружает путь к базе из settings.json или запрашивает у пользователя при первом запуске."""
     if SETTINGS_PATH.exists():
         try:
             with open(SETTINGS_PATH, 'r', encoding='utf-8') as f:
@@ -87,6 +89,38 @@ def ensure_solutor_exists(solutor_path: Path):
         default_payers = ["ИТ", "Бухгалтерия", "Отдел закупок", "Дирекция"]
         with open(solutor_path, 'w', encoding='utf-8') as f:
             json.dump(default_payers, f, ensure_ascii=False, indent=4)
+
+
+def log_action(action: str):
+    """Записывает действие в audit.log"""
+    if AUDIT_LOG_PATH is None:
+        return
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(AUDIT_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] {action}\n")
+    except Exception:
+        pass  # Не критично, если лог не пишется
+
+
+def validate_date(date_str: str) -> bool:
+    if not re.fullmatch(r'\d{2}\.\d{2}\.\d{4}', date_str):
+        return False
+    try:
+        datetime.strptime(date_str, "%d.%m.%Y")
+        return True
+    except ValueError:
+        return False
+
+
+def validate_amount(amount_str: str) -> bool:
+    if not amount_str.strip():
+        return False
+    try:
+        float(amount_str.replace(" ", "").replace(",", "."))
+        return True
+    except ValueError:
+        return False
 
 
 class PayersManager:
@@ -139,6 +173,7 @@ class PayersManager:
                 if new_payer not in self.payers:
                     self.payers.append(new_payer)
                     self.save_payers()
+                    log_action(f"Добавлен плательщик: {new_payer}")
                     listbox.insert(tk.END, new_payer)
                 else:
                     messagebox.showinfo("Инфо", "Такой плательщик уже существует.")
@@ -152,6 +187,7 @@ class PayersManager:
             if messagebox.askyesno("Подтверждение", f"Удалить плательщика '{payer}'?"):
                 del self.payers[idx]
                 self.save_payers()
+                log_action(f"Удалён плательщик: {payer}")
                 listbox.delete(idx)
 
         btn_frame = tk.Frame(win)
@@ -172,7 +208,17 @@ class RegistrumApp:
         self.root.title("Registrum — Реестр счетов покупок")
         self.root.state('zoomed')
 
+        # Установка иконки, если существует
+        if ICON_PATH.exists():
+            try:
+                self.root.iconbitmap(str(ICON_PATH))
+            except Exception:
+                pass
+
         self.base_dir = load_base_dir()
+        global AUDIT_LOG_PATH
+        AUDIT_LOG_PATH = self.base_dir / "audit.log"
+
         self.base_path = self.base_dir / "base.json"
         self.solutor_path = self.base_dir / "solutor.json"
 
@@ -188,6 +234,9 @@ class RegistrumApp:
                 messagebox.showerror("Ошибка", f"Не удалось создать файлы:\n{e}")
                 exit()
 
+        # Автоматическое резервное копирование (раз в 24 часа)
+        self.auto_backup()
+
         self.payers_manager = PayersManager(root, self.solutor_path, self.readonly_mode)
         self.payers_manager.load_payers()
 
@@ -195,13 +244,25 @@ class RegistrumApp:
         top_frame = tk.Frame(root)
         top_frame.pack(pady=5, padx=20, fill=tk.X)
 
+        # Поиск
         tk.Label(top_frame, text="Поиск:", font=("Arial", 10)).pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
         self.search_var.trace("w", self.on_search_change)
-        self.search_entry = tk.Entry(top_frame, textvariable=self.search_var, font=("Arial", 10), width=40)
+        self.search_entry = tk.Entry(top_frame, textvariable=self.search_var, font=("Arial", 10), width=30)
         self.search_entry.pack(side=tk.LEFT, padx=(5, 10))
 
-        tk.Button(top_frame, text="Очистить", command=self.clear_search).pack(side=tk.LEFT, padx=(0, 5))
+        # Фильтр по дате
+        tk.Label(top_frame, text="Период:", font=("Arial", 10)).pack(side=tk.LEFT, padx=(10, 5))
+        self.date_from_var = tk.StringVar()
+        self.date_to_var = tk.StringVar()
+        self.date_from_entry = tk.Entry(top_frame, textvariable=self.date_from_var, font=("Arial", 10), width=10)
+        self.date_to_entry = tk.Entry(top_frame, textvariable=self.date_to_var, font=("Arial", 10), width=10)
+        self.date_from_entry.pack(side=tk.LEFT)
+        tk.Label(top_frame, text="–", font=("Arial", 10)).pack(side=tk.LEFT)
+        self.date_to_entry.pack(side=tk.LEFT, padx=(0, 10))
+        tk.Button(top_frame, text="Применить", command=self.apply_date_filter, font=("Arial", 9)).pack(side=tk.LEFT)
+
+        tk.Button(top_frame, text="Очистить", command=self.clear_filters).pack(side=tk.LEFT, padx=(10, 5))
         self.btn_backup = tk.Button(top_frame, text="Резерв", command=self.create_backup)
         self.btn_backup.pack(side=tk.LEFT, padx=(0, 20))
 
@@ -214,28 +275,28 @@ class RegistrumApp:
 
         self.btn_pdf = tk.Button(btn_frame, text="В PDF", command=self.export_to_pdf, width=12, height=1)
         self.btn_excel = tk.Button(btn_frame, text="В Excel", command=self.export_to_excel, width=12, height=1)
+        self.btn_import = tk.Button(btn_frame, text="Импорт CSV", command=self.import_from_csv, width=12, height=1)
         self.btn_payers = tk.Button(btn_frame, text="Плательщики", command=self.open_payers_window, width=12, height=1)
         self.btn_settings = tk.Button(btn_frame, text="Настройки", command=self.open_settings, width=12, height=1)
         self.btn_chart = tk.Button(btn_frame, text="График", command=self.show_chart, width=12, height=1)
         self.btn_info = tk.Button(btn_frame, text="Инфо", command=self.show_info, width=12, height=1)
-        self.btn_exit = tk.Button(btn_frame, text="Выход", command=self.root.quit, width=12, height=1)
+        self.btn_exit = tk.Button(btn_frame, text="Выход", command=self.on_exit, width=12, height=1)
 
-        buttons = [self.btn_pdf, self.btn_excel, self.btn_payers, self.btn_settings, self.btn_chart, self.btn_info,
-                   self.btn_exit]
+        buttons = [self.btn_pdf, self.btn_excel, self.btn_import, self.btn_payers, self.btn_settings, self.btn_chart, self.btn_info, self.btn_exit]
         for i, btn in enumerate(buttons):
-            btn.grid(row=0, column=i, padx=3)
+            btn.grid(row=0, column=i, padx=2)
 
         if self.readonly_mode:
             self.btn_backup.config(state='disabled')
             self.btn_settings.config(state='disabled')
             self.btn_payers.config(state='disabled')
+            self.btn_import.config(state='disabled')
 
         # Таблица
         table_frame = tk.Frame(root)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        self.columns = ["Дата", "Заказ", "Сумма", "Поставщик", "Плательщик", "Инициатор", "Обоснование", "Оплата",
-                        "Забрал", "Комментарии"]
+        self.columns = ["Дата", "Заказ", "Сумма", "Поставщик", "Плательщик", "Инициатор", "Обоснование", "Оплата", "Забрал", "Комментарии"]
         self.tree = ttk.Treeview(table_frame, columns=self.columns, show='headings')
 
         for col in self.columns:
@@ -266,8 +327,7 @@ class RegistrumApp:
         form_frame = tk.Frame(root)
         form_frame.pack(pady=10, padx=20, fill=tk.X)
 
-        tk.Label(form_frame, text="Форма добавления / редактирования заказа:", font=("Arial", 12, "bold")).pack(
-            anchor='w')
+        tk.Label(form_frame, text="Форма добавления / редактирования заказа:", font=("Arial", 12, "bold")).pack(anchor='w')
 
         self.entries = {}
         grid_frame = tk.Frame(form_frame)
@@ -279,20 +339,17 @@ class RegistrumApp:
         for i, field in enumerate(short_fields):
             row = i // 2
             col = (i % 2) * 2
-            tk.Label(grid_frame, text=f"{field}:", font=("Arial", 10)).grid(row=row, column=col, sticky='e', padx=5,
-                                                                            pady=3)
+            tk.Label(grid_frame, text=f"{field}:", font=("Arial", 10)).grid(row=row, column=col, sticky='e', padx=5, pady=3)
             entry = tk.Entry(grid_frame, font=("Arial", 10), width=30)
-            entry.grid(row=row, column=col + 1, sticky='w', padx=5, pady=3)
+            entry.grid(row=row, column=col+1, sticky='w', padx=5, pady=3)
             self.entries[field] = entry
 
         # Поле "Плательщик" — Combobox
         row = len(short_fields) // 2
         col = 0
-        tk.Label(grid_frame, text="Плательщик:", font=("Arial", 10)).grid(row=row, column=col, sticky='e', padx=5,
-                                                                          pady=3)
-        self.payer_combobox = ttk.Combobox(grid_frame, values=self.payers_manager.payers, font=("Arial", 10), width=28,
-                                           state="readonly")
-        self.payer_combobox.grid(row=row, column=col + 1, sticky='w', padx=5, pady=3)
+        tk.Label(grid_frame, text="Плательщик:", font=("Arial", 10)).grid(row=row, column=col, sticky='e', padx=5, pady=3)
+        self.payer_combobox = ttk.Combobox(grid_frame, values=self.payers_manager.payers, font=("Arial", 10), width=28, state="readonly")
+        self.payer_combobox.grid(row=row, column=col+1, sticky='w', padx=5, pady=3)
         self.entries["Плательщик"] = self.payer_combobox
 
         for field in long_fields:
@@ -309,8 +366,7 @@ class RegistrumApp:
         form_btn_frame.pack(pady=10)
 
         self.btn_new = tk.Button(form_btn_frame, text="Новый", command=self.clear_form, width=20, height=2)
-        self.btn_save_order = tk.Button(form_btn_frame, text="Сохранить заказ", command=self.save_order, width=20,
-                                        height=2)
+        self.btn_save_order = tk.Button(form_btn_frame, text="Сохранить заказ", command=self.save_order, width=20, height=2)
         self.btn_cancel = tk.Button(form_btn_frame, text="Отмена", command=self.clear_form, width=20, height=2)
 
         self.btn_new.pack(side=tk.LEFT, padx=10)
@@ -331,9 +387,10 @@ class RegistrumApp:
 
         self.editing_index = None
         self.all_data = []
+        self.filtered_data = []  # данные после применения фильтров
         self.load_table()
         self.clear_form()
-        self.root.bind("<Escape>", lambda e: self.root.quit())
+        self.root.protocol("WM_DELETE_WINDOW", self.on_exit)
         self.update_yearly_total()
 
     def can_write_to_base_dir(self) -> bool:
@@ -347,10 +404,80 @@ class RegistrumApp:
         except (OSError, IOError, PermissionError):
             return False
 
+    def auto_backup(self):
+        """Создаёт резервную копию, если прошло более 24 часов с последней."""
+        if self.readonly_mode:
+            return
+
+        backup_marker = self.base_dir / "last_backup.txt"
+        now = datetime.now()
+        should_backup = True
+
+        if backup_marker.exists():
+            try:
+                with open(backup_marker, 'r') as f:
+                    last_time_str = f.read().strip()
+                    last_time = datetime.fromisoformat(last_time_str)
+                    if (now - last_time) < timedelta(hours=24):
+                        should_backup = False
+            except Exception:
+                pass
+
+        if should_backup:
+            self.create_backup(silent=True)
+            try:
+                with open(backup_marker, 'w') as f:
+                    f.write(now.isoformat())
+            except Exception:
+                pass
+
+    def create_backup(self, silent=False):
+        if self.readonly_mode:
+            if not silent:
+                messagebox.showwarning("Доступ запрещён", "Режим только для чтения.")
+            return
+        if not self.base_path.exists():
+            if not silent:
+                messagebox.showwarning("Предупреждение", "Файл базы не существует!")
+            return
+
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        backup_base_path = self.base_dir / f"base_{timestamp}.json"
+        backup_solutor_path = self.base_dir / f"solutor_{timestamp}.json"
+        try:
+            shutil.copy2(self.base_path, backup_base_path)
+            if self.solutor_path.exists():
+                shutil.copy2(self.solutor_path, backup_solutor_path)
+            log_action(f"Созданы резервные копии: {backup_base_path.name}, {backup_solutor_path.name}")
+            if not silent:
+                messagebox.showinfo("Успех", f"Резервные копии созданы:\n{backup_base_path}\n{backup_solutor_path}")
+        except Exception as e:
+            if not silent:
+                messagebox.showerror("Ошибка", f"Не удалось создать резервные копии:\n{e}")
+
+    def load_data(self):
+        if not self.base_path.exists():
+            return []
+        try:
+            with open(self.base_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось загрузить базу:\n{e}")
+            return []
+
+    def save_data(self, data):
+        if self.readonly_mode:
+            return
+        try:
+            with open(self.base_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить базу:\n{e}")
+
     def load_table(self):
         self.all_data = self.load_data()
         self.sort_by_date_desc()
-        self.refresh_table_view()
+        self.apply_filters()
         self.auto_adjust_column_widths()
 
     def sort_by_date_desc(self):
@@ -363,19 +490,63 @@ class RegistrumApp:
                 except:
                     pass
             return (0, 0, 0)
-
         self.all_data.sort(key=_sort_key, reverse=True)
 
-    def refresh_table_view(self, search_term=""):
+    def apply_filters(self):
+        """Применяет поиск и фильтр по дате."""
+        search_term = self.search_var.get().lower()
+        date_from = self.date_from_var.get().strip()
+        date_to = self.date_to_var.get().strip()
+
+        filtered = []
+        for record in self.all_data:
+            # Поиск
+            if search_term:
+                match = any(search_term in str(record.get(col, "")).lower() for col in self.columns)
+                if not match:
+                    continue
+
+            # Фильтр по дате
+            date_str = record.get("Дата", "").strip()
+            if date_from or date_to:
+                if not validate_date(date_str):
+                    continue
+                record_date = datetime.strptime(date_str, "%d.%m.%Y")
+                if date_from:
+                    if not validate_date(date_from):
+                        continue
+                    from_date = datetime.strptime(date_from, "%d.%m.%Y")
+                    if record_date < from_date:
+                        continue
+                if date_to:
+                    if not validate_date(date_to):
+                        continue
+                    to_date = datetime.strptime(date_to, "%d.%m.%Y")
+                    if record_date > to_date:
+                        continue
+
+            filtered.append(record)
+
+        self.filtered_data = filtered
+        self.refresh_table_view()
+
+    def apply_date_filter(self):
+        self.apply_filters()
+
+    def clear_filters(self):
+        self.search_var.set("")
+        self.date_from_var.set("")
+        self.date_to_var.set("")
+        self.apply_filters()
+
+    def on_search_change(self, *args):
+        self.apply_filters()
+
+    def refresh_table_view(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        filtered = self.all_data if not search_term else [
-            record for record in self.all_data
-            if any(search_term.lower() in str(record.get(col, "")).lower() for col in self.columns)
-        ]
-
-        for record in filtered:
+        for record in self.filtered_data:
             values = [record.get(col, "") for col in self.columns]
             self.tree.insert('', tk.END, values=values)
 
@@ -397,52 +568,6 @@ class RegistrumApp:
         for col in self.columns:
             self.tree.column(col, width=default_widths.get(col, 120))
 
-    def on_search_change(self, *args):
-        term = self.search_var.get()
-        self.refresh_table_view(term)
-
-    def clear_search(self):
-        self.search_var.set("")
-        self.refresh_table_view()
-
-    def create_backup(self):
-        if self.readonly_mode:
-            messagebox.showwarning("Доступ запрещён", "Режим только для чтения.")
-            return
-        if not self.base_path.exists():
-            messagebox.showwarning("Предупреждение", "Файл базы не существует!")
-            return
-
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        backup_base_path = self.base_dir / f"base_{timestamp}.json"
-        backup_solutor_path = self.base_dir / f"solutor_{timestamp}.json"
-        try:
-            shutil.copy2(self.base_path, backup_base_path)
-            if self.solutor_path.exists():
-                shutil.copy2(self.solutor_path, backup_solutor_path)
-            messagebox.showinfo("Успех", f"Резервные копии созданы:\n{backup_base_path}\n{backup_solutor_path}")
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось создать резервные копии:\n{e}")
-
-    def load_data(self):
-        if not self.base_path.exists():
-            return []
-        try:
-            with open(self.base_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось загрузить базу:\n{e}")
-            return []
-
-    def save_data(self, data):
-        if self.readonly_mode:
-            return
-        try:
-            with open(self.base_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось сохранить базу:\n{e}")
-
     def clear_form(self):
         if self.readonly_mode:
             return
@@ -455,7 +580,7 @@ class RegistrumApp:
                 self.entries[field].insert(0, "ИТ")
             elif field in ("Оплата", "Забрал"):
                 self.entries[field].insert(0, "Да")
-        self.payer_combobox.set("")  # сброс Combobox
+        self.payer_combobox.set("")
         for field in ["Обоснование", "Комментарии"]:
             self.entries[field].delete("1.0", tk.END)
 
@@ -467,12 +592,19 @@ class RegistrumApp:
         if not selected:
             return
         item = selected[0]
-        index = self.tree.index(item)
-        if index >= len(self.all_data):
+        # Найти индекс в filtered_data
+        index_in_filtered = self.tree.index(item)
+        if index_in_filtered >= len(self.filtered_data):
             return
-        record = self.all_data[index]
+        record = self.filtered_data[index_in_filtered]
 
-        self.editing_index = index
+        # Найти оригинальный индекс в all_data
+        try:
+            self.editing_index = self.all_data.index(record)
+        except ValueError:
+            self.editing_index = None
+            return
+
         for field in ["Дата", "Заказ", "Сумма", "Поставщик", "Инициатор", "Оплата", "Забрал"]:
             self.entries[field].delete(0, tk.END)
             self.entries[field].insert(0, record.get(field, ""))
@@ -490,6 +622,22 @@ class RegistrumApp:
             messagebox.showwarning("Доступ запрещён", "Режим только для чтения.")
             return
 
+        # Валидация
+        date_val = self.entries["Дата"].get().strip()
+        if not validate_date(date_val):
+            messagebox.showerror("Ошибка", "Некорректная дата. Используйте формат ДД.ММ.ГГГГ.")
+            return
+
+        sum_val = self.entries["Сумма"].get().strip()
+        if not validate_amount(sum_val):
+            messagebox.showerror("Ошибка", "Сумма должна быть числом.")
+            return
+
+        supplier = self.entries["Поставщик"].get().strip()
+        if not supplier:
+            messagebox.showerror("Ошибка", "Поле 'Поставщик' обязательно для заполнения.")
+            return
+
         record = {}
         for field in ["Дата", "Заказ", "Сумма", "Поставщик", "Инициатор", "Оплата", "Забрал"]:
             record[field] = self.entries[field].get().strip()
@@ -498,23 +646,26 @@ class RegistrumApp:
             record[field] = self.entries[field].get("1.0", tk.END).strip()
 
         data = self.all_data
-        if self.editing_index is not None:
+        if self.editing_index is not None and 0 <= self.editing_index < len(data):
+            old_record = data[self.editing_index]
             data[self.editing_index] = record
             self.save_data(data)
+            log_action(f"Обновлена запись: {record.get('Заказ', 'без номера')}")
             self.load_table()
             messagebox.showinfo("Успех", "Запись успешно обновлена!")
         else:
             data.append(record)
             self.save_data(data)
+            log_action(f"Добавлена запись: {record.get('Заказ', 'без номера')} на {record.get('Сумма', '0')} руб.")
             self.load_table()
             messagebox.showinfo("Успех", "Новый заказ успешно добавлен!")
 
         self.clear_form()
 
     def export_to_pdf(self):
-        data = self.all_data
+        data = self.filtered_data
         if not data:
-            messagebox.showwarning("Предупреждение", "База данных пуста!")
+            messagebox.showwarning("Предупреждение", "Нет данных для экспорта!")
             return
 
         file_path = filedialog.asksaveasfilename(
@@ -526,8 +677,7 @@ class RegistrumApp:
             return
 
         try:
-            doc = SimpleDocTemplate(file_path, pagesize=landscape(A4), leftMargin=36, rightMargin=36, topMargin=36,
-                                    bottomMargin=36)
+            doc = SimpleDocTemplate(file_path, pagesize=landscape(A4), leftMargin=36, rightMargin=36, topMargin=36, bottomMargin=36)
             elements = []
 
             styles = getSampleStyleSheet()
@@ -539,6 +689,19 @@ class RegistrumApp:
             elements.append(title)
             elements.append(Spacer(1, 12))
 
+            # Подсчёт итога
+            total_sum = 0.0
+            for record in data:
+                try:
+                    s = record.get("Сумма", "0").replace(" ", "").replace(",", ".")
+                    total_sum += float(s)
+                except:
+                    pass
+            total_paragraph = Paragraph(f"<b>Итого: {int(total_sum):,} руб.</b>".replace(',', ' '), styles['Normal'])
+            elements.append(total_paragraph)
+            elements.append(Spacer(1, 12))
+
+            # Таблица
             table_data = [self.columns]
             for record in data:
                 row = [str(record.get(col, "")) for col in self.columns]
@@ -575,15 +738,23 @@ class RegistrumApp:
             table = Table(table_data, colWidths=col_widths, repeatRows=1)
             table.setStyle(TableStyle(table_style))
             elements.append(table)
-            doc.build(elements)
+
+            # Нумерация страниц
+            def add_page_number(canvas, doc):
+                page_num = canvas.getPageNumber()
+                text = f"Стр. {page_num}"
+                canvas.setFont('Helvetica', 9)
+                canvas.drawRightString(landscape(A4)[0] - 36, 20, text)
+
+            doc.build(elements, onFirstPage=add_page_number, onLaterPages=add_page_number)
             messagebox.showinfo("Успех", f"Файл PDF сохранён:\n{file_path}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось создать PDF:\n{e}")
 
     def export_to_excel(self):
-        data = self.all_data
+        data = self.filtered_data
         if not data:
-            messagebox.showwarning("Предупреждение", "База данных пуста!")
+            messagebox.showwarning("Предупреждение", "Нет данных для экспорта!")
             return
 
         file_path = filedialog.asksaveasfilename(
@@ -608,6 +779,16 @@ class RegistrumApp:
                 row = [record.get(col, "") for col in self.columns]
                 ws.append(row)
 
+            # Итоговая строка
+            total_sum = 0.0
+            for record in data:
+                try:
+                    s = record.get("Сумма", "0").replace(" ", "").replace(",", ".")
+                    total_sum += float(s)
+                except:
+                    pass
+            ws.append([""] * (len(self.columns) - 1) + [f"Итого: {int(total_sum):,} руб.".replace(',', ' ')])
+
             for col in ws.columns:
                 max_length = 0
                 column = col[0].column_letter
@@ -626,12 +807,49 @@ class RegistrumApp:
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось создать Excel:\n{e}")
 
+    def import_from_csv(self):
+        if self.readonly_mode:
+            messagebox.showwarning("Доступ запрещён", "Режим только для чтения.")
+            return
+
+        file_path = filedialog.askopenfilename(
+            title="Выберите CSV-файл для импорта",
+            filetypes=[("CSV files", "*.csv")]
+        )
+        if not file_path:
+            return
+
+        try:
+            new_records = []
+            with open(file_path, 'r', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f, delimiter=';')
+                for row in reader:
+                    # Проверяем обязательные поля
+                    if not row.get("Поставщик") or not row.get("Сумма"):
+                        continue
+                    # Приводим к нужному формату
+                    record = {col: row.get(col, "") for col in self.columns}
+                    new_records.append(record)
+
+            if not new_records:
+                messagebox.showwarning("Предупреждение", "Нет корректных записей для импорта.")
+                return
+
+            if messagebox.askyesno("Подтверждение", f"Будет добавлено {len(new_records)} записей. Продолжить?"):
+                self.all_data.extend(new_records)
+                self.save_data(self.all_data)
+                log_action(f"Импортировано {len(new_records)} записей из CSV")
+                self.load_table()
+                messagebox.showinfo("Успех", "Импорт завершён успешно!")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось импортировать CSV:\n{e}")
+
     def show_info(self):
         info_text = (
-            "Registrum v0.6\n\n"
+            "Registrum v0.7\n\n"
             "Система учёта счетов покупок\n"
             "Автор: Разин Г.В.\n"
-            "© 2025 Все права защищены"
+            "© 2025"
         )
         messagebox.showinfo("О программе", info_text)
 
@@ -667,6 +885,8 @@ class RegistrumApp:
                 return
 
             self.base_dir = new_dir_path
+            global AUDIT_LOG_PATH
+            AUDIT_LOG_PATH = self.base_dir / "audit.log"
             self.base_path = new_dir_path / "base.json"
             self.solutor_path = new_dir_path / "solutor.json"
             save_base_dir(self.base_dir)
@@ -705,9 +925,19 @@ class RegistrumApp:
         if not messagebox.askyesno("Подтверждение", "Удалить выбранную запись?"):
             return
 
-        index = self.tree.index(selected[0])
-        self.all_data.pop(index)
+        index_in_filtered = self.tree.index(selected[0])
+        if index_in_filtered >= len(self.filtered_data):
+            return
+        record_to_delete = self.filtered_data[index_in_filtered]
+
+        try:
+            self.all_data.remove(record_to_delete)
+        except ValueError:
+            messagebox.showerror("Ошибка", "Запись не найдена в базе.")
+            return
+
         self.save_data(self.all_data)
+        log_action(f"Удалена запись: {record_to_delete.get('Заказ', 'без номера')}")
         self.load_table()
         self.clear_form()
         messagebox.showinfo("Успех", "Запись удалена.")
@@ -739,11 +969,12 @@ class RegistrumApp:
                     return str(val).lower()
 
         self.all_data.sort(key=_sort_key, reverse=reverse)
-        self.refresh_table_view(self.search_var.get())
+        self.apply_filters()
 
     def update_yearly_total(self):
         current_year = datetime.now().year
-        total = 0.0
+        total_current = 0.0
+        total_all = 0.0
         for record in self.all_data:
             date_str = record.get("Дата", "").strip()
             sum_str = record.get("Сумма", "").strip()
@@ -755,37 +986,37 @@ class RegistrumApp:
                 except:
                     pass
 
-            if year == current_year:
-                try:
-                    sum_val = float(sum_str.replace(" ", "").replace(",", "."))
-                    total += sum_val
-                except:
-                    pass
+            try:
+                sum_val = float(sum_str.replace(" ", "").replace(",", "."))
+                total_all += sum_val
+                if year == current_year:
+                    total_current += sum_val
+            except:
+                pass
 
-        self.status_label.config(text=f"Затраты в текущем году: {int(total):,} руб.".replace(',', ' '))
+        self.status_label.config(
+            text=f"Текущий год: {int(total_current):,} руб. | Всего: {int(total_all):,} руб.".replace(',', ' ')
+        )
 
     def show_chart(self):
-        data = self.all_data
+        data = self.filtered_data
         if not data:
             messagebox.showwarning("Предупреждение", "Нет данных для построения графика!")
             return
 
-        # Create a dialog to choose chart type
         chart_win = tk.Toplevel(self.root)
         chart_win.title("Выбор типа графика")
-        chart_win.geometry("350x220")
+        chart_win.geometry("350x270")
         chart_win.grab_set()
 
         tk.Label(chart_win, text="Выберите тип графика:", font=("Arial", 12, "bold")).pack(pady=(15, 10))
 
         chart_type = tk.StringVar(value="yearly_total")
 
-        tk.Radiobutton(chart_win, text="Общий по годам (все плательщики)", variable=chart_type, value="yearly_total",
-                       font=("Arial", 10)).pack(anchor=tk.W, padx=30, pady=2)
-        tk.Radiobutton(chart_win, text="Сравнение плательщиков по годам", variable=chart_type, value="payer_comparison",
-                       font=("Arial", 10)).pack(anchor=tk.W, padx=30, pady=2)
-        tk.Radiobutton(chart_win, text="Детализация по годам", variable=chart_type, value="yearly_detail",
-                       font=("Arial", 10)).pack(anchor=tk.W, padx=30, pady=2)
+        tk.Radiobutton(chart_win, text="Общий по годам", variable=chart_type, value="yearly_total", font=("Arial", 10)).pack(anchor=tk.W, padx=30, pady=2)
+        tk.Radiobutton(chart_win, text="Сравнение плательщиков по годам", variable=chart_type, value="payer_comparison", font=("Arial", 10)).pack(anchor=tk.W, padx=30, pady=2)
+        tk.Radiobutton(chart_win, text="Детализация по годам", variable=chart_type, value="yearly_detail", font=("Arial", 10)).pack(anchor=tk.W, padx=30, pady=2)
+        tk.Radiobutton(chart_win, text="По месяцам (текущий год)", variable=chart_type, value="monthly_current", font=("Arial", 10)).pack(anchor=tk.W, padx=30, pady=2)
 
         def show_selected_chart():
             chart_win.destroy()
@@ -795,31 +1026,26 @@ class RegistrumApp:
                 self._show_payer_comparison_chart(data)
             elif chart_type.get() == "yearly_detail":
                 self._show_yearly_detail_chart(data)
+            elif chart_type.get() == "monthly_current":
+                self._show_monthly_chart(data)
 
-        tk.Button(chart_win, text="Показать график", command=show_selected_chart, font=("Arial", 10), width=20).pack(
-            pady=20)
+        tk.Button(chart_win, text="Показать график", command=show_selected_chart, font=("Arial", 10), width=20).pack(pady=20)
 
     def _show_yearly_total_chart(self, data):
-        """Shows a simple bar chart of total expenses per year."""
-        # Prepare data: {year: total_amount}
         yearly_totals = {}
-
         for record in data:
             date_str = record.get("Дата", "").strip()
             sum_str = record.get("Сумма", "").strip()
-
             year = None
             if re.match(r'\d{2}\.\d{2}\.\d{4}', date_str):
                 try:
                     year = datetime.strptime(date_str, "%d.%m.%Y").year
                 except:
                     continue
-
             try:
                 sum_val = float(sum_str.replace(" ", "").replace(",", "."))
             except:
                 continue
-
             if year not in yearly_totals:
                 yearly_totals[year] = 0.0
             yearly_totals[year] += sum_val
@@ -833,13 +1059,11 @@ class RegistrumApp:
 
         fig, ax = plt.subplots(figsize=(12, 7))
         bars = ax.bar(years, totals, color='steelblue')
-
-        # Add value labels on top of bars
         for bar in bars:
             height = bar.get_height()
             ax.annotate(f'{int(height):,}'.replace(',', ' '),
                         xy=(bar.get_x() + bar.get_width() / 2, height),
-                        xytext=(0, 3),  # 3 points vertical offset
+                        xytext=(0, 3),
                         textcoords="offset points",
                         ha='center', va='bottom', fontweight='bold')
 
@@ -850,8 +1074,6 @@ class RegistrumApp:
         ax.set_xticks(years)
         ax.set_xticklabels([str(y) for y in years])
         ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-        # Format the plot to look more professional
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.set_facecolor('#f8f9fa')
@@ -860,39 +1082,28 @@ class RegistrumApp:
         try:
             manager.window.state('zoomed')
         except:
-            try:
-                manager.full_screen_toggle()
-            except:
-                pass
-
+            pass
         plt.tight_layout()
         plt.show()
 
     def _show_payer_comparison_chart(self, data):
-        """Shows a stacked bar chart comparing payers across years."""
-        # Prepare data: {year: {payer: sum}}
         yearly_payer_totals = {}
-
         for record in data:
             date_str = record.get("Дата", "").strip()
             sum_str = record.get("Сумма", "").strip()
             payer = record.get("Плательщик", "").strip()
-
             if not payer:
                 continue
-
             year = None
             if re.match(r'\d{2}\.\d{2}\.\d{4}', date_str):
                 try:
                     year = datetime.strptime(date_str, "%d.%m.%Y").year
                 except:
                     continue
-
             try:
                 sum_val = float(sum_str.replace(" ", "").replace(",", "."))
             except:
                 continue
-
             if year not in yearly_payer_totals:
                 yearly_payer_totals[year] = {}
             if payer not in yearly_payer_totals[year]:
@@ -905,8 +1116,6 @@ class RegistrumApp:
 
         years = sorted(yearly_payer_totals.keys())
         all_payers = sorted(set(payer for year_data in yearly_payer_totals.values() for payer in year_data.keys()))
-
-        # Prepare data for plotting
         payer_totals_per_year = {payer: [] for payer in all_payers}
         for year in years:
             for payer in all_payers:
@@ -914,16 +1123,11 @@ class RegistrumApp:
 
         fig, ax = plt.subplots(figsize=(14, 8))
         bottom = np.zeros(len(years))
-
-        # Use a professional color palette
         colors = plt.cm.tab20(np.linspace(0, 1, len(all_payers)))
-
-        # Create stacked bars
         for i, payer in enumerate(all_payers):
             ax.bar(years, payer_totals_per_year[payer], bottom=bottom, label=payer, color=colors[i])
             bottom += np.array(payer_totals_per_year[payer])
 
-        # Add total values on top of each stacked bar
         for i, year in enumerate(years):
             total = sum(payer_totals_per_year[payer][i] for payer in all_payers)
             ax.annotate(f'{int(total):,}'.replace(',', ' '),
@@ -940,8 +1144,6 @@ class RegistrumApp:
         ax.set_xticks(years)
         ax.set_xticklabels([str(y) for y in years])
         ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-        # Format the plot to look more professional
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.set_facecolor('#f8f9fa')
@@ -950,39 +1152,28 @@ class RegistrumApp:
         try:
             manager.window.state('zoomed')
         except:
-            try:
-                manager.full_screen_toggle()
-            except:
-                pass
-
+            pass
         plt.tight_layout()
         plt.show()
 
     def _show_yearly_detail_chart(self, data):
-        """Shows individual bar charts for each year, comparing payers within that year."""
-        # Prepare data: {year: {payer: sum}}
         yearly_payer_totals = {}
-
         for record in data:
             date_str = record.get("Дата", "").strip()
             sum_str = record.get("Сумма", "").strip()
             payer = record.get("Плательщик", "").strip()
-
             if not payer:
                 continue
-
             year = None
             if re.match(r'\d{2}\.\d{2}\.\d{4}', date_str):
                 try:
                     year = datetime.strptime(date_str, "%d.%m.%Y").year
                 except:
                     continue
-
             try:
                 sum_val = float(sum_str.replace(" ", "").replace(",", "."))
             except:
                 continue
-
             if year not in yearly_payer_totals:
                 yearly_payer_totals[year] = {}
             if payer not in yearly_payer_totals[year]:
@@ -994,12 +1185,9 @@ class RegistrumApp:
             return
 
         years = sorted(yearly_payer_totals.keys())
-
-        # Create subplots for each year
         n_years = len(years)
         cols = 2
         rows = (n_years + 1) // cols
-
         fig, axes = plt.subplots(rows, cols, figsize=(16, 6 * rows))
         if n_years == 1:
             axes = [axes]
@@ -1008,7 +1196,6 @@ class RegistrumApp:
         else:
             axes = axes.flatten()
 
-        # Use a consistent color palette across all subplots
         all_payers = sorted(set(payer for year_data in yearly_payer_totals.values() for payer in year_data.keys()))
         colors = plt.cm.tab20(np.linspace(0, 1, len(all_payers)))
         payer_colors = {payer: colors[i] for i, payer in enumerate(all_payers)}
@@ -1016,18 +1203,11 @@ class RegistrumApp:
         for i, year in enumerate(years):
             ax = axes[i] if n_years > 1 else axes[0]
             year_data = yearly_payer_totals[year]
-
-            # Sort payers by amount for better visualization
             sorted_payers = sorted(year_data.items(), key=lambda x: x[1], reverse=True)
             payers = [item[0] for item in sorted_payers]
             amounts = [item[1] for item in sorted_payers]
-
-            # Get colors for this year's payers
             year_colors = [payer_colors[payer] for payer in payers]
-
             bars = ax.bar(payers, amounts, color=year_colors)
-
-            # Add value labels on top of bars
             for bar in bars:
                 height = bar.get_height()
                 ax.annotate(f'{int(height):,}'.replace(',', ' '),
@@ -1035,19 +1215,15 @@ class RegistrumApp:
                             xytext=(0, 3),
                             textcoords="offset points",
                             ha='center', va='bottom', fontweight='bold')
-
             ax.set_title(f"Затраты по плательщикам за {year} год", fontsize=14, fontweight='bold')
             ax.set_ylabel("Сумма (руб.)", fontsize=12)
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'.replace(',', ' ')))
             ax.tick_params(axis='x', rotation=45)
             ax.grid(axis='y', linestyle='--', alpha=0.7)
-
-            # Format the plot to look more professional
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
             ax.set_facecolor('#f8f9fa')
 
-        # Hide unused subplots if any
         for j in range(n_years, len(axes)):
             if n_years > 1:
                 axes[j].set_visible(False)
@@ -1056,13 +1232,63 @@ class RegistrumApp:
         try:
             manager.window.state('zoomed')
         except:
-            try:
-                manager.full_screen_toggle()
-            except:
-                pass
-
+            pass
         plt.tight_layout()
         plt.show()
+
+    def _show_monthly_chart(self, data):
+        """График по месяцам за текущий год."""
+        current_year = datetime.now().year
+        monthly_totals = {i: 0.0 for i in range(1, 13)}
+
+        for record in data:
+            date_str = record.get("Дата", "").strip()
+            sum_str = record.get("Сумма", "").strip()
+            if not re.match(r'\d{2}\.\d{2}\.\d{4}', date_str):
+                continue
+            try:
+                dt = datetime.strptime(date_str, "%d.%m.%Y")
+                if dt.year != current_year:
+                    continue
+                sum_val = float(sum_str.replace(" ", "").replace(",", "."))
+                monthly_totals[dt.month] += sum_val
+            except:
+                continue
+
+        months = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн",
+                  "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
+        totals = [monthly_totals[i] for i in range(1, 13)]
+
+        fig, ax = plt.subplots(figsize=(14, 7))
+        bars = ax.bar(months, totals, color='teal')
+        for bar in bars:
+            height = bar.get_height()
+            if height > 0:
+                ax.annotate(f'{int(height):,}'.replace(',', ' '),
+                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                            xytext=(0, 3),
+                            textcoords="offset points",
+                            ha='center', va='bottom', fontweight='bold')
+
+        ax.set_title(f"Затраты по месяцам за {current_year} год", fontsize=16, fontweight='bold')
+        ax.set_xlabel("Месяц", fontsize=12)
+        ax.set_ylabel("Сумма (руб.)", fontsize=12)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'{int(x):,}'.replace(',', ' ')))
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.set_facecolor('#f8f9fa')
+
+        manager = plt.get_current_fig_manager()
+        try:
+            manager.window.state('zoomed')
+        except:
+            pass
+        plt.tight_layout()
+        plt.show()
+
+    def on_exit(self):
+        self.root.destroy()
 
 
 def main():
