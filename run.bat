@@ -1,46 +1,38 @@
 @echo off
 setlocal
 
-:: Путь к текущей папке
+:: Path to the current directory
 set "SCRIPT_DIR=%~dp0"
 
-:: Проверяем, инициализирован ли git-репозиторий
+:: Check if the folder is a Git repository
 if not exist ".git" (
-    echo Репозиторий не найден. Обновление невозможно.
-    echo Запуск приложения...
+    echo Repository not found. Skipping update.
+    echo Starting application...
     python app.py
     goto :eof
 )
 
-echo Проверка обновлений в репозитории...
+echo Checking for updates...
 
-:: Получаем изменения из удалённого репозитория
+:: Fetch latest changes from remote
 git fetch origin
 
-:: Сравниваем локальный и удалённый HEAD
+:: Compare local HEAD with remote main branch
 git diff --quiet HEAD origin/main
 if errorlevel 1 (
-    echo.
-    echo Обнаружены обновления!
-    echo.
-    set /p "choice=Хотите обновиться сейчас? (y/n): "
-    if /i "%choice%"=="y" (
-        echo Выполняется обновление...
-        git pull origin main
-        if errorlevel 1 (
-            echo Ошибка при обновлении. Приложение запущено без обновления.
-        ) else (
-            echo Обновление завершено.
-        )
+    echo Updates detected. Pulling latest changes...
+    git pull origin main
+    if errorlevel 1 (
+        echo Failed to update. Starting application anyway.
     ) else (
-        echo Обновление отменено.
+        echo Update completed successfully.
     )
 ) else (
-    echo Обновлений нет.
+    echo No updates available.
 )
 
 echo.
-echo Запуск Registrum...
+echo Starting Registrum...
 python app.py
 
 pause
