@@ -89,23 +89,13 @@ if "%CURRENT_COMMIT%"=="%LATEST_COMMIT%" (
     echo.
     echo Выполняем обновление...
 
-    :: Получаем временную метку в формате YYYYMMDD_HHMM (без кириллицы!)
-    for /f "delims=" %%i in ('powershell -command "Get-Date -Format 'yyyyMMdd_HHmm'"') do set "TIMESTAMP=%%i"
-    set "BACKUP_FOLDER=backup\registrum_backup_%TIMESTAMP%"
-
-    :: Создаем резервную копию
-    if not exist "backup" mkdir "backup"
-    echo Создаем резервную копию в %BACKUP_FOLDER%
-    xcopy * "%BACKUP_FOLDER%" /E /I /Y /Q >nul 2>&1
-
-    :: Копируем новые файлы из временного репозитория
+    :: Копируем новые файлы из временного репозитория (без резервной копии)
     xcopy "%TEMP_DIR%\registrum\*" "%~dp0" /E /Y /Q >nul 2>&1
 
     :: Сохраняем только хеш коммита как текущую версию
     echo %LATEST_COMMIT% > version.txt
 
     echo Обновление завершено!
-    echo Резервная копия сохранена в: %BACKUP_FOLDER%
 )
 
 :run_app
@@ -145,11 +135,9 @@ echo       Запуск Registrum...
 echo ========================================
 python "%SCRIPT_NAME%"
 
-:: Если приложение завершилось с ошибкой
 if errorlevel 1 (
     echo.
-    echo Приложение завершилось с ошибкой (код: %errorlevel%)
-    echo.
+    echo Ошибка при запуске приложения.
     pause
 )
 
