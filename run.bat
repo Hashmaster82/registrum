@@ -8,7 +8,7 @@ echo ========================================
 echo.
 
 set "REPO_URL=https://github.com/Hashmaster82/registrum.git"
-set "SCRIPT_NAME=registrum_app.py"
+set "SCRIPT_NAME=app.py"
 set "TEMP_DIR=%TEMP%\registrum_update"
 
 :: Проверяем наличие Python
