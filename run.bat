@@ -36,7 +36,7 @@ cd /d "%TEMP_DIR%"
 
 if exist "registrum" (
     cd registrum
-    git fetch origin main --quiet
+    git fetch origin master --quiet
     if errorlevel 1 (
         echo Не удалось получить данные из репозитория
         goto :run_app
@@ -50,8 +50,8 @@ if exist "registrum" (
     cd registrum
 )
 
-:: Получаем хеш последнего коммита в main
-for /f "delims=" %%i in ('git rev-parse --short origin/main 2^>nul') do set "LATEST_COMMIT=%%i"
+:: Получаем хеш последнего коммита в master
+for /f "delims=" %%i in ('git rev-parse --short origin/master 2^>nul') do set "LATEST_COMMIT=%%i"
 
 cd /d "%~dp0"
 
