@@ -3,17 +3,53 @@
 Скрипт проверки обновлений на GitHub
 """
 
-import requests
 import json
 import os
+import sys
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox
 import webbrowser
+import subprocess
+
+
+def check_dependencies():
+    """Проверяет установлены ли необходимые зависимости"""
+    try:
+        import requests
+        return True
+    except ImportError:
+        print("⚠ Библиотека 'requests' не установлена")
+        print("Установка необходимых зависимостей...")
+
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
+            print("✓ Зависимости установлены")
+
+            # Перезагружаем модуль после установки
+            import importlib
+            import requests
+            return True
+        except Exception as e:
+            print(f"✗ Ошибка установки зависимостей: {e}")
+
+            # Показываем диалог с ошибкой
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror(
+                "Ошибка зависимостей",
+                f"Не удалось установить необходимые библиотеки:\n{e}\n\n"
+                "Пожалуйста, установите вручную:\n"
+                "pip install requests"
+            )
+            return False
 
 
 def check_for_updates():
     """Проверяет наличие обновлений на GitHub"""
+    # Импортируем requests здесь, после проверки зависимостей
+    import requests
+
     repo_owner = "Hashmaster82"  # ЗАМЕНИТЕ на ваш GitHub username
     repo_name = "registrum"  # ЗАМЕНИТЕ на название репозитория
 
@@ -67,7 +103,7 @@ def check_for_updates():
                 print("✓ У вас актуальная версия программы")
 
         else:
-            print("ℹ Не удалось проверить обновления (проблемы с подключением)")
+            print(f"ℹ Не удалось проверить обновления (HTTP {response.status_code})")
 
     except requests.exceptions.RequestException as e:
         print(f"ℹ Не удалось проверить обновления: {e}")
@@ -75,32 +111,11 @@ def check_for_updates():
         print(f"ℹ Ошибка при проверке обновлений: {e}")
 
 
-def check_dependencies():
-    """Проверяет установлены ли необходимые зависимости"""
-    try:
-        import requests
-        return True
-    except ImportError:
-        print("⚠ Библиотека 'requests' не установлена")
-        print("Установка необходимых зависимостей...")
-
-        try:
-            import subprocess
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
-            print("✓ Зависимости установлены")
-            return True
-        except Exception as e:
-            print(f"✗ Ошибка установки зависимостей: {e}")
-            return False
-
-
 if __name__ == "__main__":
-    import sys
-
-    # Проверяем зависимости
+    # Сначала проверяем зависимости
     if not check_dependencies():
         print("Не удалось установить зависимости для проверки обновлений")
         sys.exit(1)
 
-    # Проверяем обновления
+    # Затем проверяем обновления
     check_for_updates()
