@@ -39,23 +39,25 @@ if exist "registrum" (
     git fetch origin master --quiet
     if errorlevel 1 (
         echo Не удалось получить данные из репозитория
+        cd /d "%~dp0"
         goto :run_app
     )
 ) else (
     git clone --depth 1 --quiet %REPO_URL% registrum
     if errorlevel 1 (
         echo Не удалось клонировать репозиторий
+        cd /d "%~dp0"
         goto :run_app
     )
     cd registrum
 )
 
-:: Получаем хеш последнего коммита в master
+:: Получаем хеш последнего коммита в ветке master
 for /f "delims=" %%i in ('git rev-parse --short origin/master 2^>nul') do set "LATEST_COMMIT=%%i"
 
 cd /d "%~dp0"
 
-:: Читаем текущую версию
+:: Читаем текущую версию (только хеш)
 set "CURRENT_COMMIT="
 if exist "version.txt" (
     set /p CURRENT_COMMIT=<version.txt
@@ -74,7 +76,7 @@ if defined LATEST_COMMIT (
     goto :run_app
 )
 
-:: Сравниваем
+:: Сравниваем версии
 if "%CURRENT_COMMIT%"=="%LATEST_COMMIT%" (
     echo У вас установлена последняя версия
 ) else (
@@ -87,21 +89,23 @@ if "%CURRENT_COMMIT%"=="%LATEST_COMMIT%" (
     echo.
     echo Выполняем обновление...
 
-    :: Резервная копия
-    set "BACKUP_FOLDER=backup\registrum_backup_%date:~-4,4%%date:~-10,2%%date:~-7,2%_%time:~0,2%%time:~3,2%"
-    set "BACKUP_FOLDER=%BACKUP_FOLDER: =0%"
+    :: Получаем временную метку в формате YYYYMMDD_HHMM (без кириллицы!)
+    for /f "delims=" %%i in ('powershell -command "Get-Date -Format 'yyyyMMdd_HHmm'"') do set "TIMESTAMP=%%i"
+    set "BACKUP_FOLDER=backup\registrum_backup_%TIMESTAMP%"
+
+    :: Создаем резервную копию
     if not exist "backup" mkdir "backup"
     echo Создаем резервную копию в %BACKUP_FOLDER%
     xcopy * "%BACKUP_FOLDER%" /E /I /Y /Q >nul 2>&1
 
-    :: Копируем новые файлы
+    :: Копируем новые файлы из временного репозитория
     xcopy "%TEMP_DIR%\registrum\*" "%~dp0" /E /Y /Q >nul 2>&1
 
-    :: Сохраняем новую версию
+    :: Сохраняем только хеш коммита как текущую версию
     echo %LATEST_COMMIT% > version.txt
 
     echo Обновление завершено!
-    echo Резервная копия: %BACKUP_FOLDER%
+    echo Резервная копия сохранена в: %BACKUP_FOLDER%
 )
 
 :run_app
@@ -109,29 +113,43 @@ echo.
 echo Запуск приложения...
 echo.
 
+:: Проверяем наличие основного скрипта
 if not exist "%SCRIPT_NAME%" (
-    echo ОШИБКА: Файл %SCRIPT_NAME% не найден
+    echo ОШИБКА: Основной файл %SCRIPT_NAME% не найден
+    echo.
+    echo Содержимое папки:
+    dir /b *.py
+    echo.
     pause
     exit /b 1
 )
 
-:: Проверка зависимостей
-echo Проверяем зависимости...
+:: Проверяем зависимости
+echo Проверяем зависимости Python...
 python -c "import reportlab, openpyxl, matplotlib" >nul 2>&1
 if errorlevel 1 (
-    echo Устанавливаем зависимости...
+    echo.
+    echo Устанавливаем необходимые зависимости...
     pip install reportlab openpyxl matplotlib --quiet
+    if errorlevel 1 (
+        echo Не удалось установить зависимости. Попробуйте вручную:
+        echo pip install reportlab openpyxl matplotlib
+        pause
+    )
 )
 
+:: Запускаем приложение
 echo.
 echo ========================================
 echo       Запуск Registrum...
 echo ========================================
 python "%SCRIPT_NAME%"
 
+:: Если приложение завершилось с ошибкой
 if errorlevel 1 (
     echo.
-    echo Ошибка при запуске приложения.
+    echo Приложение завершилось с ошибкой (код: %errorlevel%)
+    echo.
     pause
 )
 
