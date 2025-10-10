@@ -34,6 +34,7 @@ backup_*
 # IDE
 .vscode/
 .idea/
+.venv
 *.swp
 *.swo
 
