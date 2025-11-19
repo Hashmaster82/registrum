@@ -333,57 +333,31 @@ class RegistrumApp:
         grid_frame = tk.Frame(form_frame)
         grid_frame.pack(pady=5, fill=tk.X)
 
-        # Первая строка
-        row = 0
-        tk.Label(grid_frame, text="Дата:", font=("Arial", 10)).grid(row=row, column=0, sticky='e', padx=5, pady=3)
-        self.entries["Дата"] = tk.Entry(grid_frame, font=("Arial", 10), width=30)
-        self.entries["Дата"].grid(row=row, column=1, sticky='w', padx=5, pady=3)
+        short_fields = ["Дата", "Заказ", "Сумма", "Поставщик", "Инициатор", "Оплата", "Забрал"]
+        long_fields = ["Обоснование", "Комментарии"]
 
-        tk.Label(grid_frame, text="Заказ:", font=("Arial", 10)).grid(row=row, column=2, sticky='e', padx=5, pady=3)
-        self.entries["Заказ"] = tk.Entry(grid_frame, font=("Arial", 10), width=30)
-        self.entries["Заказ"].grid(row=row, column=3, sticky='w', padx=5, pady=3)
+        for i, field in enumerate(short_fields):
+            row = i // 2
+            col = (i % 2) * 2
+            tk.Label(grid_frame, text=f"{field}:", font=("Arial", 10)).grid(row=row, column=col, sticky='e', padx=5, pady=3)
+            entry = tk.Entry(grid_frame, font=("Arial", 10), width=30)
+            entry.grid(row=row, column=col+1, sticky='w', padx=5, pady=3)
+            self.entries[field] = entry
 
-        # Вторая строка
-        row = 1
-        tk.Label(grid_frame, text="Сумма:", font=("Arial", 10)).grid(row=row, column=0, sticky='e', padx=5, pady=3)
-        self.entries["Сумма"] = tk.Entry(grid_frame, font=("Arial", 10), width=30)
-        self.entries["Сумма"].grid(row=row, column=1, sticky='w', padx=5, pady=3)
-
-        tk.Label(grid_frame, text="Поставщик:", font=("Arial", 10)).grid(row=row, column=2, sticky='e', padx=5, pady=3)
-        self.entries["Поставщик"] = tk.Entry(grid_frame, font=("Arial", 10), width=30)
-        self.entries["Поставщик"].grid(row=row, column=3, sticky='w', padx=5, pady=3)
-
-        # Третья строка
-        row = 2
-        tk.Label(grid_frame, text="Инициатор:", font=("Arial", 10)).grid(row=row, column=0, sticky='e', padx=5, pady=3)
-        self.entries["Инициатор"] = tk.Entry(grid_frame, font=("Arial", 10), width=30)
-        self.entries["Инициатор"].grid(row=row, column=1, sticky='w', padx=5, pady=3)
-
-        tk.Label(grid_frame, text="Плательщик:", font=("Arial", 10)).grid(row=row, column=2, sticky='e', padx=5, pady=3)
+        # Поле "Плательщик" — Combobox
+        row = len(short_fields) // 2
+        col = 0
+        tk.Label(grid_frame, text="Плательщик:", font=("Arial", 10)).grid(row=row, column=col, sticky='e', padx=5, pady=3)
         self.payer_combobox = ttk.Combobox(grid_frame, values=self.payers_manager.payers, font=("Arial", 10), width=28, state="readonly")
-        self.payer_combobox.grid(row=row, column=3, sticky='w', padx=5, pady=3)
+        self.payer_combobox.grid(row=row, column=col+1, sticky='w', padx=5, pady=3)
         self.entries["Плательщик"] = self.payer_combobox
 
-        # Четвертая строка
-        row = 3
-        tk.Label(grid_frame, text="Оплата:", font=("Arial", 10)).grid(row=row, column=0, sticky='e', padx=5, pady=3)
-        self.entries["Оплата"] = tk.Entry(grid_frame, font=("Arial", 10), width=30)
-        self.entries["Оплата"].grid(row=row, column=1, sticky='w', padx=5, pady=3)
-
-        tk.Label(grid_frame, text="Забрал:", font=("Arial", 10)).grid(row=row, column=2, sticky='e', padx=5, pady=3)
-        self.entries["Забрал"] = tk.Entry(grid_frame, font=("Arial", 10), width=30)
-        self.entries["Забрал"].grid(row=row, column=3, sticky='w', padx=5, pady=3)
-
-        # Длинные поля
-        row = 4
-        tk.Label(grid_frame, text="Обоснование:", font=("Arial", 10)).grid(row=row, column=0, sticky='ne', padx=5, pady=5)
-        self.entries["Обоснование"] = tk.Text(grid_frame, font=("Arial", 10), width=60, height=3)
-        self.entries["Обоснование"].grid(row=row, column=1, columnspan=3, sticky='ew', padx=5, pady=5)
-
-        row = 5
-        tk.Label(grid_frame, text="Комментарии:", font=("Arial", 10)).grid(row=row, column=0, sticky='ne', padx=5, pady=5)
-        self.entries["Комментарии"] = tk.Text(grid_frame, font=("Arial", 10), width=60, height=3)
-        self.entries["Комментарии"].grid(row=row, column=1, columnspan=3, sticky='ew', padx=5, pady=5)
+        for field in long_fields:
+            tk.Label(grid_frame, text=f"{field}:", font=("Arial", 10)).grid(
+                row=row + 1 + long_fields.index(field), column=0, sticky='ne', padx=5, pady=5)
+            text = tk.Text(grid_frame, font=("Arial", 10), width=60, height=3)
+            text.grid(row=row + 1 + long_fields.index(field), column=1, columnspan=3, sticky='ew', padx=5, pady=5)
+            self.entries[field] = text
 
         grid_frame.grid_columnconfigure(1, weight=1)
         grid_frame.grid_columnconfigure(3, weight=1)
